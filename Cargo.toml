@@ -1,0 +1,12 @@
+[package]
+name = "hitl-sensors"
+version = "0.1.0"
+edition = "2021"
+description = "Sensor simulation for HITL drone testing"
+
+[dependencies]
+nalgebra = "0.33"
+rand = "0.8"
+
+[dev-dependencies]
+approx = "0.5"
