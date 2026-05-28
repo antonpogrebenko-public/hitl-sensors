@@ -110,6 +110,17 @@ impl MagSensor {
         &self.config
     }
 
+    /// Reset accumulated sensor state to initial conditions.
+    ///
+    /// Currently the magnetometer has no accumulated drift or bias state, so
+    /// this is a no-op. It exists so that `Sensors::reset()` can call it
+    /// uniformly and callers are not broken when hard/soft iron drift state is
+    /// added in the future.
+    pub fn reset(&mut self) {
+        // No accumulated state to reset at this time.
+        // Add hard/soft iron bias resets here as the model evolves.
+    }
+
     /// Update the magnetic field (e.g., for different location).
     pub fn set_field_ned(&mut self, field_ned_nt: [f64; 3]) {
         self.config.field_ned_nt = field_ned_nt;

@@ -68,7 +68,8 @@ pub struct GpsReading {
     pub lat: f64,
     /// Longitude in degrees
     pub lon: f64,
-    /// Altitude in meters MSL
+    /// Altitude in meters AGL (height above launch/reference point, i.e. `-ned_down`).
+    /// Does NOT include reference_alt — callers must add reference_alt to get MSL.
     pub alt: f32,
     /// Velocity North in m/s
     pub vel_n: f32,
@@ -220,8 +221,13 @@ impl GpsSensor {
                 }
             }
 
+            // Cap buffer size to avoid unbounded growth during startup (max 20 samples)
+            while self.delay_buffer.len() > 20 {
+                self.delay_buffer.pop_front();
+            }
+
             if let Some(sample) = self.delay_buffer.front() {
-                if sample.time_s <= target_time || time_s > delay_s {
+                if sample.time_s <= target_time {
                     self.last_output_time = time_s;
 
                     let (lat, lon, alt) =

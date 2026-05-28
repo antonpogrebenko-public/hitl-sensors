@@ -163,6 +163,8 @@ impl Sensors {
     pub fn reset(&mut self) {
         self.imu.reset();
         self.gps.reset();
+        self.baro.reset();
+        self.mag.reset();
     }
 }
 

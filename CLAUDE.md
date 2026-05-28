@@ -43,6 +43,8 @@ let gps_reading = gps.sample(position_ned, velocity_ned, sim_time);
 | accel_noise_density | 0.006 | 0.006 |
 | gyro_bias_sigma | 0.0001 | **0.0** |
 | gyro_bias_tau | 100.0 | 1000.0 |
+| accel_bias_sigma | 0.003 | **0.0** |
+| accel_bias_tau | 300.0 | 1000.0 |
 
 ### GPS (GpsConfig)
 | Parameter | Default | HITL Recommended |

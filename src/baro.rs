@@ -71,15 +71,24 @@ impl BaroSensor {
     ///
     /// T = T0 - L * h
     /// where T0 = 288.15 K, L = 0.0065 K/m
+    ///
+    /// Input is clamped to the valid troposphere range [-500m, 11000m] to prevent
+    /// negative temperatures (and NaN in pressure calculations) from physics
+    /// instabilities that push NED altitude far out of range.
     fn isa_temperature_k(altitude_m: f64) -> f64 {
-        ISA_T0 - ISA_LAPSE_RATE * altitude_m
+        let clamped = altitude_m.clamp(-500.0, 11_000.0);
+        ISA_T0 - ISA_LAPSE_RATE * clamped
     }
 
     /// Calculate pressure at altitude using ISA model.
     ///
     /// P = P0 * (T/T0)^5.2561
+    ///
+    /// Input is clamped to the valid troposphere range [-500m, 11000m] to prevent
+    /// NaN from powf() when temperature goes negative at extreme altitudes.
     fn isa_pressure_pa(altitude_m: f64) -> f64 {
-        let temp_k = Self::isa_temperature_k(altitude_m);
+        let clamped_alt = altitude_m.clamp(-500.0, 11_000.0);
+        let temp_k = Self::isa_temperature_k(clamped_alt);
         ISA_P0 * (temp_k / ISA_T0).powf(ISA_EXPONENT)
     }
 
@@ -125,6 +134,16 @@ impl BaroSensor {
     /// Get the current configuration.
     pub fn config(&self) -> &BaroConfig {
         &self.config
+    }
+
+    /// Reset accumulated sensor state to initial conditions.
+    ///
+    /// Currently the barometer has no accumulated drift or bias state, so this
+    /// is a no-op. It exists so that `Sensors::reset()` can call it uniformly
+    /// and callers are not broken when drift state is added in the future.
+    pub fn reset(&mut self) {
+        // No accumulated state to reset at this time.
+        // Add drift/bias resets here as the model evolves.
     }
 
     /// Update the reference pressure (for QNH adjustment).
@@ -219,6 +238,28 @@ mod tests {
             mean,
             true_altitude
         );
+    }
+
+    #[test]
+    fn test_baro_extreme_altitudes_no_nan() {
+        // Physics instability can push NED altitude far outside normal UAV range.
+        // Verify the ISA model never produces NaN or infinite values at extremes.
+        for &alt in &[-10_000.0_f64, -1_000.0, 50_000.0, 100_000.0, 1_000_000.0] {
+            let pressure = BaroSensor::isa_pressure_pa(alt);
+            let temp_k = BaroSensor::isa_temperature_k(alt);
+            assert!(
+                pressure.is_finite(),
+                "pressure should be finite at altitude {}m, got {}",
+                alt,
+                pressure
+            );
+            assert!(
+                temp_k.is_finite() && temp_k > 0.0,
+                "temperature should be finite and positive at altitude {}m, got {}",
+                alt,
+                temp_k
+            );
+        }
     }
 
     #[test]

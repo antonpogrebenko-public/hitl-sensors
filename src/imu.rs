@@ -18,6 +18,10 @@ pub struct ImuConfig {
     pub gyro_bias_sigma: f64,
     /// Gyroscope bias time constant in seconds
     pub gyro_bias_tau: f64,
+    /// Accelerometer bias stability sigma in m/s² (~0.3mg for typical MEMS IMU)
+    pub accel_bias_sigma: f64,
+    /// Accelerometer bias correlation time in seconds
+    pub accel_bias_tau: f64,
 }
 
 impl Default for ImuConfig {
@@ -28,6 +32,8 @@ impl Default for ImuConfig {
             accel_noise_density: 0.00637,     // m/s²/√Hz (~650 µg/√Hz)
             gyro_bias_sigma: 1e-4,            // rad/s
             gyro_bias_tau: 100.0,             // seconds
+            accel_bias_sigma: 0.003,          // m/s² (~0.3mg bias stability)
+            accel_bias_tau: 300.0,            // seconds
         }
     }
 }
@@ -36,6 +42,7 @@ impl Default for ImuConfig {
 pub struct ImuSensor {
     config: ImuConfig,
     gyro_bias: [GaussMarkov; 3],
+    accel_bias: [GaussMarkov; 3],
     rng: StdRng,
 }
 
@@ -66,10 +73,16 @@ impl ImuSensor {
             GaussMarkov::new(config.gyro_bias_tau, config.gyro_bias_sigma),
             GaussMarkov::new(config.gyro_bias_tau, config.gyro_bias_sigma),
         ];
+        let accel_bias = [
+            GaussMarkov::new(config.accel_bias_tau, config.accel_bias_sigma),
+            GaussMarkov::new(config.accel_bias_tau, config.accel_bias_sigma),
+            GaussMarkov::new(config.accel_bias_tau, config.accel_bias_sigma),
+        ];
 
         Self {
             config,
             gyro_bias,
+            accel_bias,
             rng: StdRng::seed_from_u64(seed),
         }
     }
@@ -91,14 +104,15 @@ impl ImuSensor {
     ) -> ImuReading {
         let dt_sqrt = dt.sqrt();
 
-        // Generate white noise for accelerometer
+        // Generate white noise + bias for accelerometer
         let accel_noise_sigma = self.config.accel_noise_density / dt_sqrt;
         let mut accel = [0f32; 3];
         for i in 0..3 {
+            let bias = self.accel_bias[i].step(dt, &mut self.rng);
             let u1: f64 = self.rng.gen_range(0.0001..1.0);
             let u2: f64 = self.rng.gen();
             let (z, _) = box_muller(u1, u2);
-            accel[i] = (true_accel_body[i] + accel_noise_sigma * z) as f32;
+            accel[i] = (true_accel_body[i] + bias + accel_noise_sigma * z) as f32;
         }
 
         // Generate white noise + bias for gyroscope
@@ -118,6 +132,9 @@ impl ImuSensor {
     /// Reset the sensor state (clears bias drift).
     pub fn reset(&mut self) {
         for bias in &mut self.gyro_bias {
+            bias.reset();
+        }
+        for bias in &mut self.accel_bias {
             bias.reset();
         }
     }
