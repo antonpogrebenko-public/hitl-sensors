@@ -90,6 +90,13 @@ Don't set noise to 0.0 — PX4's sensor validators detect "stuck" sensors. Use s
 ### GPS position drift disabled for HITL
 Set `position_drift_sigma: 0.0` to prevent slow position walk that triggers failsafes.
 
+## Approach
+- Read existing files before writing. Don't re-read unless changed.
+- Thorough in reasoning, concise in output.
+- No sycophantic openers or closing fluff.
+- No emojis or em-dashes.
+- Do not guess APIs, versions, flags, commit SHAs, or package names. Verify by reading code or docs before asserting.
+
 ### GPS delay is active for the entire flight
 The `|| time_s > delay_s` bypass was removed — the delay model (ring buffer, capped at 20 samples) is enforced from t=0 through the full flight. Do not expect instantaneous GPS fix on startup; the first valid reading arrives after `delay_ms` has elapsed.
 
