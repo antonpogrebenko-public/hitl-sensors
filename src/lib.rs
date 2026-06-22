@@ -195,8 +195,10 @@ mod tests {
         let mut time = 0.0;
 
         let mut gps_count = 0;
+        let mut accel_z_sum = 0.0f64;
+        let n = 1000;
 
-        for _ in 0..1000 {
+        for _ in 0..n {
             let readings = sensors.sample_all(
                 &true_accel,
                 &true_gyro,
@@ -210,8 +212,11 @@ mod tests {
                 dt,
             );
 
-            // Verify IMU readings are reasonable
-            assert!(readings.imu.accel[2] > 8.0 && readings.imu.accel[2] < 11.0);
+            // Per-sample IMU sanity: realistic accel noise at 1 kHz has
+            // sigma ~1 m/s², so the per-sample band is wide. The accurate
+            // check is the mean over the run, asserted after the loop.
+            accel_z_sum += readings.imu.accel[2] as f64;
+            assert!(readings.imu.accel[2] > 4.0 && readings.imu.accel[2] < 16.0);
 
             // Verify baro readings are reasonable
             assert!(readings.baro.altitude_m > 90.0 && readings.baro.altitude_m < 110.0);
@@ -229,6 +234,14 @@ mod tests {
 
             time += dt;
         }
+
+        // Averaged over the run, accel Z must recover gravity (noise cancels).
+        let accel_z_mean = accel_z_sum / n as f64;
+        assert!(
+            (accel_z_mean - 9.81).abs() < 0.2,
+            "mean accel Z {} should be near 9.81",
+            accel_z_mean
+        );
 
         // Should have received some GPS readings (5 Hz over 1 second)
         assert!(gps_count >= 3 && gps_count <= 6);

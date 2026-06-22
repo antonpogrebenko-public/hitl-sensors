@@ -39,8 +39,8 @@ let gps_reading = gps.sample(position_ned, velocity_ned, sim_time);
 ### IMU (ImuConfig)
 | Parameter | Default | HITL Recommended |
 |-----------|---------|------------------|
-| gyro_noise_density | 0.0008 | 0.0008 |
-| accel_noise_density | 0.006 | 0.006 |
+| gyro_noise_density | 0.002937 | 0.002937 |
+| accel_noise_density | 0.032669 | 0.032669 |
 | gyro_bias_sigma | 0.0001 | **0.0** |
 | gyro_bias_tau | 100.0 | 1000.0 |
 | accel_bias_sigma | 0.0 | **0.0** |

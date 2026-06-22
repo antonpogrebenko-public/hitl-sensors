@@ -26,14 +26,18 @@ pub struct ImuConfig {
 
 impl Default for ImuConfig {
     fn default() -> Self {
-        // Based on MPU-6000 / Kalibr typical values
+        // Noise densities are the IQR-filtered medians measured from real PX4
+        // flight logs (hitl_sensor_profiles `_MCU_ALL`, n=53, SIM logs excluded,
+        // 2026-06-22). They run ~3-5x higher than idealized MPU-6000 datasheet
+        // figures because real airframes add mounting/EMI/vibration noise even at
+        // rest. See th3seus-tools/log_validation/.
         Self {
-            gyro_noise_density: 0.0008726646, // rad/s/√Hz (~0.05 deg/s/√Hz)
-            accel_noise_density: 0.00637,     // m/s²/√Hz (~650 µg/√Hz)
-            gyro_bias_sigma: 1e-4,            // rad/s
-            gyro_bias_tau: 100.0,             // seconds
-            accel_bias_sigma: 0.003,          // m/s² (~0.3mg bias stability)
-            accel_bias_tau: 300.0,            // seconds
+            gyro_noise_density: 0.002937,  // rad/s/√Hz (real-log median)
+            accel_noise_density: 0.032669, // m/s²/√Hz (real-log median)
+            gyro_bias_sigma: 1e-4,         // rad/s
+            gyro_bias_tau: 100.0,          // seconds
+            accel_bias_sigma: 0.003,       // m/s² (~0.3mg bias stability)
+            accel_bias_tau: 300.0,         // seconds
         }
     }
 }

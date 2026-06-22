@@ -13,8 +13,8 @@ const NT_TO_GAUSS: f64 = 1e-5;
 /// Configuration for magnetometer sensor.
 #[derive(Debug, Clone)]
 pub struct MagConfig {
-    /// Earth's magnetic field in NED frame (nanotesla)
-    /// Default is Boulder, CO: [22200, 3500, 41800] nT
+    /// Earth's magnetic field in NED frame (nanotesla).
+    /// Default is Boulder, CO (see the `Default` impl for the exact WMM values).
     pub field_ned_nt: [f64; 3],
     /// Measurement noise standard deviation in Gauss
     pub noise_sigma_gauss: f64,
