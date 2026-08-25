@@ -117,8 +117,7 @@ impl BaroSensor {
         let pressure_pa = Self::isa_pressure_pa(noisy_altitude);
 
         // Calculate pressure altitude (what the barometer reports)
-        let altitude_m =
-            Self::pressure_to_altitude(pressure_pa, self.config.reference_pressure_pa);
+        let altitude_m = Self::pressure_to_altitude(pressure_pa, self.config.reference_pressure_pa);
 
         // Calculate temperature
         let temperature_k = Self::isa_temperature_k(noisy_altitude);

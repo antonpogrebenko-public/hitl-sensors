@@ -30,13 +30,13 @@ pub struct GpsConfig {
 impl Default for GpsConfig {
     fn default() -> Self {
         Self {
-            position_drift_tau: 30.0,       // seconds
-            position_drift_sigma: 0.06,     // m/s equivalent drift
-            horizontal_noise_sigma: 1.5,    // meters
-            altitude_noise_sigma: 3.0,      // meters
-            velocity_noise_sigma: 0.1,      // m/s
-            delay_ms: 120.0,                // milliseconds
-            update_rate_hz: 5.0,            // Hz
+            position_drift_tau: 30.0,    // seconds
+            position_drift_sigma: 0.06,  // m/s equivalent drift
+            horizontal_noise_sigma: 1.5, // meters
+            altitude_noise_sigma: 3.0,   // meters
+            velocity_noise_sigma: 0.1,   // m/s
+            delay_ms: 120.0,             // milliseconds
+            update_rate_hz: 5.0,         // Hz
         }
     }
 }
@@ -99,10 +99,7 @@ impl GpsSensor {
         let drift = [
             GaussMarkov::new(config.position_drift_tau, config.position_drift_sigma),
             GaussMarkov::new(config.position_drift_tau, config.position_drift_sigma),
-            GaussMarkov::new(
-                config.position_drift_tau,
-                config.altitude_noise_sigma * 0.1,
-            ), // Smaller drift for altitude
+            GaussMarkov::new(config.position_drift_tau, config.altitude_noise_sigma * 0.1), // Smaller drift for altitude
         ];
 
         Self {
@@ -116,19 +113,14 @@ impl GpsSensor {
     }
 
     /// Convert NED position to lat/lon given reference point.
-    fn ned_to_latlon(
-        position_ned: &[f64; 3],
-        ref_lat: f64,
-        ref_lon: f64,
-    ) -> (f64, f64, f64) {
+    fn ned_to_latlon(position_ned: &[f64; 3], ref_lat: f64, ref_lon: f64) -> (f64, f64, f64) {
         let ref_lat_rad = ref_lat.to_radians();
 
         // North offset to latitude change
         let lat = ref_lat + (position_ned[0] / EARTH_RADIUS_M).to_degrees();
 
         // East offset to longitude change (accounting for latitude)
-        let lon =
-            ref_lon + (position_ned[1] / (EARTH_RADIUS_M * ref_lat_rad.cos())).to_degrees();
+        let lon = ref_lon + (position_ned[1] / (EARTH_RADIUS_M * ref_lat_rad.cos())).to_degrees();
 
         // Down to altitude (negative down = positive altitude)
         let alt = -position_ned[2];
@@ -318,10 +310,7 @@ mod tests {
         }
 
         // Verify we got GPS readings
-        assert!(
-            !gps_times.is_empty(),
-            "Should have received GPS readings"
-        );
+        assert!(!gps_times.is_empty(), "Should have received GPS readings");
 
         // Check that GPS readings are delayed by ~120ms
         // The GPS position at time T should correspond to true position at T - 0.12s
