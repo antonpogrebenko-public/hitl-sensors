@@ -202,14 +202,27 @@ impl GpsSensor {
             // Find sample that should be output now (with delay)
             let target_time = time_s - delay_s;
 
-            // Remove old samples and find the right one
+            // Discard samples that a newer one has superseded, keeping the most
+            // recent sample that is still old enough to output.
+            //
+            // The front is dropped only when the sample behind it has also aged
+            // past the delay. Popping every sample at or below the target
+            // instead leaves the front *newer* than the target, and the emit
+            // check below can then never pass — so a reading only ever escaped
+            // when the buffer happened to hold exactly one sample. That holds
+            // while the delay is shorter than one update period, and fails
+            // permanently once it is not: at 18 Hz with 120 ms of delay the
+            // buffer never drops below three, GPS went silent, and PX4 refused
+            // to arm with "ekf2 missing data".
             while self.delay_buffer.len() > 1 {
-                if let Some(front) = self.delay_buffer.front() {
-                    if front.time_s <= target_time {
-                        self.delay_buffer.pop_front();
-                    } else {
-                        break;
-                    }
+                let next_is_ready = self
+                    .delay_buffer
+                    .get(1)
+                    .is_some_and(|next| next.time_s <= target_time);
+                if next_is_ready {
+                    self.delay_buffer.pop_front();
+                } else {
+                    break;
                 }
             }
 
@@ -443,5 +456,112 @@ mod tests {
                 reading.alt
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod delay_buffer_tests {
+    use super::*;
+
+    /// Drive the model at 400 Hz for `secs` and count how many readings it emits.
+    fn emitted_over(rate_hz: f64, delay_ms: f64, secs: f64) -> usize {
+        let mut gps = GpsSensor::with_config(GpsConfig {
+            update_rate_hz: rate_hz,
+            delay_ms,
+            horizontal_noise_sigma: 0.0,
+            altitude_noise_sigma: 0.0,
+            velocity_noise_sigma: 0.0,
+            position_drift_sigma: 0.0,
+            ..GpsConfig::default()
+        });
+
+        let mut count = 0;
+        let ticks = (secs * 400.0) as usize;
+        for i in 1..=ticks {
+            let t = i as f64 / 400.0;
+            if gps
+                .sample(&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], 40.0, -105.0, t)
+                .is_some()
+            {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn emits_at_its_configured_rate_when_the_delay_is_shorter_than_a_period() {
+        // The default shape: 10 Hz with 80 ms of delay.
+        let n = emitted_over(10.0, 80.0, 3.0);
+        assert!(
+            (25..=32).contains(&n),
+            "expected ~30 readings over 3 s at 10 Hz, got {n}"
+        );
+    }
+
+    #[test]
+    fn keeps_emitting_when_the_delay_exceeds_one_update_period() {
+        // A real profile from the component database: 18 Hz with 120 ms delay,
+        // so the delay spans more than two update periods and the buffer never
+        // drains to a single sample.
+        //
+        // The trim loop used to pop every sample at or below the target, then
+        // ask whether the remaining front was at or below the target — which it
+        // could not be. Emission was only possible when the buffer happened to
+        // hold exactly one sample, so this configuration went permanently
+        // silent, PX4 saw no GPS at all, and the vehicle would not arm.
+        let n = emitted_over(18.0, 120.0, 3.0);
+        assert!(
+            n > 0,
+            "GPS went permanently silent at 18 Hz with 120 ms delay"
+        );
+        assert!(
+            (45..=58).contains(&n),
+            "expected ~54 readings over 3 s at 18 Hz, got {n}"
+        );
+    }
+
+    #[test]
+    fn keeps_emitting_across_a_range_of_real_profiles() {
+        for (rate, delay) in [(5.0, 200.0), (10.0, 100.0), (18.0, 120.0), (25.0, 250.0)] {
+            let n = emitted_over(rate, delay, 3.0);
+            assert!(
+                n > 0,
+                "GPS silent at {rate} Hz with {delay} ms delay -- delay >= period must still emit"
+            );
+        }
+    }
+
+    #[test]
+    fn the_emitted_sample_is_actually_delayed() {
+        // The delay is the point of the buffer: a reading emitted now must
+        // describe where the vehicle was `delay_ms` ago, not where it is.
+        let mut gps = GpsSensor::with_config(GpsConfig {
+            update_rate_hz: 10.0,
+            delay_ms: 200.0,
+            horizontal_noise_sigma: 0.0,
+            altitude_noise_sigma: 0.0,
+            velocity_noise_sigma: 0.0,
+            position_drift_sigma: 0.0,
+            ..GpsConfig::default()
+        });
+
+        // Climb steadily, so altitude encodes the time a sample was taken.
+        let mut last_alt = None;
+        for i in 1..=1200 {
+            let t = i as f64 / 400.0;
+            let down = -t; // 1 m/s climb
+            if let Some(r) = gps.sample(&[0.0, 0.0, down], &[0.0, 0.0, -1.0], 40.0, -105.0, t) {
+                last_alt = Some((t, r.alt as f64));
+            }
+        }
+        let (t, alt) = last_alt.expect("some reading was emitted");
+        // Altitude equals the time of the sample it came from, so `t - alt` is
+        // the age of that sample: at least the configured delay.
+        assert!(
+            t - alt >= 0.19,
+            "sample was {:.3} s old, expected at least the 0.2 s delay",
+            t - alt
+        );
     }
 }
