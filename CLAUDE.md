@@ -100,6 +100,20 @@ Set `position_drift_sigma: 0.0` to prevent slow position walk that triggers fail
 ### GPS delay is active for the entire flight
 The `|| time_s > delay_s` bypass was removed — the delay model (ring buffer, capped at 20 samples) is enforced from t=0 through the full flight. Do not expect instantaneous GPS fix on startup; the first valid reading arrives after `delay_ms` has elapsed.
 
+### GPS delay buffer must keep the newest sample that is old enough
+The trim in `GpsSensor::sample` drops the front only when the sample *behind*
+it has also aged past `delay_ms`. Popping every sample at or below the output
+target instead leaves the front newer than the target, and the emit check that
+follows can then never pass — a reading only escapes when the buffer happens to
+hold exactly one sample.
+
+That is true whenever `delay_ms < 1/update_rate_hz`, which is why the defaults
+(5 Hz/120 ms, and the daemon's 10 Hz/80 ms) hid it. A component-database
+profile at 18 Hz/120 ms spans more than two update periods, the buffer never
+drops below three, and GPS goes silent for the rest of the session. PX4 then
+reports "ekf2 missing data" and refuses to arm, which points nowhere near a
+delay buffer.
+
 ### GPS `GpsReading.alt` is AGL, not MSL
 `alt` is altitude above the launch point (above ground level). Callers that need MSL altitude must add `reference_alt` themselves. This matches what PX4 expects for local-NED-origin alt.
 
