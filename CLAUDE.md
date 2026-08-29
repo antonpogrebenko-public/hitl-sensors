@@ -122,3 +122,22 @@ delay buffer.
 
 ### Sensors::reset() resets all four sensors
 `reset()` now calls `imu.reset()`, `gps.reset()`, `baro.reset()`, and `mag.reset()`. Previously baro and mag were silently skipped, leaving stale state after a simulation restart.
+
+### GPS accuracy is a total, not a per-sample white sigma
+`horizontal_noise_sigma` / `altitude_noise_sigma` state the module's *total*
+1-sigma error. `GpsSensor` splits that into a small uncorrelated part
+(`white_noise_fraction`, default 0.2) and a slow Gauss-Markov part
+(`noise_correlation_tau`, default 120 s), preserving
+`sigma_w^2 + sigma_c^2 = sigma^2`.
+
+Feeding the whole figure in as white noise — which is what the sensor did
+before 0.2.0 — makes every fix an independent draw metres from the last. An
+estimator differencing those fixes infers vertical velocity no aircraft could
+have, so PX4 refused to arm with "vertical velocity unstable" / "height
+estimate not stable" on any build that selected a GPS component. The defaults
+branch (no component, 0.1 m / 0.3 m) was small enough to hide it.
+
+Both are model parameters, not datasheet figures, which is why they are
+configurable. Altitude previously carried an extra ad-hoc
+`altitude_noise_sigma * 0.1` drift term that horizontal did not; that is gone,
+and `position_drift_sigma` now means the same thing on all three axes.

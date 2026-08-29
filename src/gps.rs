@@ -25,6 +25,17 @@ pub struct GpsConfig {
     pub delay_ms: f64,
     /// GPS update rate in Hz
     pub update_rate_hz: f64,
+    /// Correlation time of the dominant position error, in seconds.
+    ///
+    /// `horizontal_noise_sigma` / `altitude_noise_sigma` state a module's
+    /// *total* accuracy, and in a real receiver that total is dominated by
+    /// ionospheric, ephemeris and multipath terms that vary over minutes. This
+    /// is the time constant of that slow component.
+    pub noise_correlation_tau: f64,
+    /// Portion of the total position sigma that is uncorrelated receiver
+    /// jitter, as a fraction in `[0, 1]`. The remainder is carried by the
+    /// correlated term, so the two together still sum to the stated accuracy.
+    pub white_noise_fraction: f64,
 }
 
 impl Default for GpsConfig {
@@ -37,6 +48,13 @@ impl Default for GpsConfig {
             velocity_noise_sigma: 0.1,   // m/s
             delay_ms: 120.0,             // milliseconds
             update_rate_hz: 5.0,         // Hz
+            // A stationary consumer receiver scatters a few tens of
+            // centimetres between fixes while its absolute error wanders by
+            // metres over minutes. 20% white against a 2-minute correlation
+            // time reproduces that; both are model parameters, not datasheet
+            // figures, which is why they are configurable rather than baked in.
+            noise_correlation_tau: 120.0, // seconds
+            white_noise_fraction: 0.2,    // of the total sigma
         }
     }
 }
@@ -55,6 +73,8 @@ struct GpsSample {
 pub struct GpsSensor {
     config: GpsConfig,
     drift: [GaussMarkov; 3],
+    /// The slow component of the module's stated accuracy, one per NED axis.
+    correlated: [GaussMarkov; 3],
     delay_buffer: VecDeque<GpsSample>,
     last_update_time: f64,
     last_output_time: f64,
@@ -99,12 +119,36 @@ impl GpsSensor {
         let drift = [
             GaussMarkov::new(config.position_drift_tau, config.position_drift_sigma),
             GaussMarkov::new(config.position_drift_tau, config.position_drift_sigma),
-            GaussMarkov::new(config.position_drift_tau, config.altitude_noise_sigma * 0.1), // Smaller drift for altitude
+            // Altitude previously got an ad-hoc `altitude_noise_sigma * 0.1`
+            // here, which made the vertical axis follow a different model from
+            // the horizontal one *and* pushed total error past the configured
+            // sigma. The accuracy decomposition below covers both axes on the
+            // same terms, so this knob now means the same thing on all three.
+            GaussMarkov::new(config.position_drift_tau, config.position_drift_sigma),
         ];
+
+        // Split the stated accuracy into a small uncorrelated part and a large
+        // slowly-varying one, preserving the total: sigma_w^2 + sigma_c^2 =
+        // sigma^2. Feeding the whole figure in as white noise made every fix an
+        // independent draw metres from the last, and an estimator differencing
+        // those fixes sees vertical velocity that no aircraft could have — PX4
+        // rejected arming with "vertical velocity unstable" on any build whose
+        // GPS component carried real datasheet numbers.
+        let fraction = config.white_noise_fraction.clamp(0.0, 1.0);
+        let correlated_scale = (1.0 - fraction * fraction).sqrt();
+        let totals = [
+            config.horizontal_noise_sigma,
+            config.horizontal_noise_sigma,
+            config.altitude_noise_sigma,
+        ];
+        let correlated = std::array::from_fn(|i| {
+            GaussMarkov::new(config.noise_correlation_tau, totals[i] * correlated_scale)
+        });
 
         Self {
             config,
             drift,
+            correlated,
             delay_buffer: VecDeque::new(),
             last_update_time: -1000.0, // Force first update
             last_output_time: -1000.0,
@@ -154,29 +198,31 @@ impl GpsSensor {
         if time_s - self.last_update_time >= update_period {
             self.last_update_time = time_s;
 
-            // Update drift processes
+            // Update both correlated processes: the explicit drift knob and
+            // the slow component of the module's stated accuracy.
             let dt = update_period;
             for d in &mut self.drift {
                 d.step(dt, &mut self.rng);
             }
+            for c in &mut self.correlated {
+                c.step(dt, &mut self.rng);
+            }
 
-            // Add noisy sample to buffer
+            let fraction = self.config.white_noise_fraction.clamp(0.0, 1.0);
+            let white_sigma = [
+                self.config.horizontal_noise_sigma * fraction,
+                self.config.horizontal_noise_sigma * fraction,
+                self.config.altitude_noise_sigma * fraction,
+            ];
+
             let mut noisy_position = *position_ned;
             for i in 0..3 {
-                noisy_position[i] += self.drift[i].state();
+                noisy_position[i] += self.drift[i].state() + self.correlated[i].state();
 
-                // Add white noise
                 let u1: f64 = self.rng.gen_range(0.0001..1.0);
                 let u2: f64 = self.rng.gen();
                 let (z, _) = box_muller(u1, u2);
-
-                if i == 2 {
-                    // Altitude noise (configurable)
-                    noisy_position[i] += self.config.altitude_noise_sigma * z;
-                } else {
-                    // Horizontal noise (configurable)
-                    noisy_position[i] += self.config.horizontal_noise_sigma * z;
-                }
+                noisy_position[i] += white_sigma[i] * z;
             }
 
             // Add velocity noise (configurable)
@@ -263,6 +309,9 @@ impl GpsSensor {
     pub fn reset(&mut self) {
         for d in &mut self.drift {
             d.reset();
+        }
+        for c in &mut self.correlated {
+            c.reset();
         }
         self.delay_buffer.clear();
         self.last_update_time = -1000.0;
@@ -562,6 +611,115 @@ mod delay_buffer_tests {
             t - alt >= 0.19,
             "sample was {:.3} s old, expected at least the 0.2 s delay",
             t - alt
+        );
+    }
+}
+
+#[cfg(test)]
+mod noise_model_tests {
+    use super::*;
+
+    /// The GPS profile this failed on in the field: an 18 Hz module whose
+    /// datasheet accuracy is 1.5 m horizontal / 3.0 m vertical.
+    fn field_profile() -> GpsConfig {
+        GpsConfig {
+            horizontal_noise_sigma: 1.5,
+            altitude_noise_sigma: 3.0,
+            velocity_noise_sigma: 0.1,
+            delay_ms: 120.0,
+            update_rate_hz: 18.0,
+            position_drift_sigma: 0.0,
+            position_drift_tau: 1000.0,
+            ..Default::default()
+        }
+    }
+
+    /// Altitude error of each emitted reading, holding the vehicle still.
+    fn altitude_errors(config: GpsConfig, seconds: f64) -> Vec<f64> {
+        let mut sensor = GpsSensor::with_config_and_seed(config, 7);
+        let truth = [0.0, 0.0, -100.0]; // 100 m up, stationary
+        let mut errors = Vec::new();
+        let step = 1.0 / 400.0;
+        let mut t = 0.0;
+        while t < seconds {
+            if let Some(r) = sensor.sample(&truth, &[0.0; 3], 40.0, -105.0, t) {
+                errors.push(r.alt as f64 - 100.0);
+            }
+            t += step;
+        }
+        errors
+    }
+
+    fn std_dev(xs: &[f64]) -> f64 {
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        (xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / xs.len() as f64).sqrt()
+    }
+
+    /// Standard deviation of the change between consecutive readings.
+    fn jitter(xs: &[f64]) -> f64 {
+        let diffs: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        std_dev(&diffs)
+    }
+
+    /// Real GNSS position error is dominated by slowly-varying atmospheric,
+    /// ephemeris and multipath terms: a receiver held still wanders over
+    /// minutes, it does not hop metres between fixes 55 ms apart. Applying the
+    /// datasheet sigma as per-sample white noise is what the EKF sees as
+    /// enormous vertical velocity, and it is why PX4 refused to arm with
+    /// "vertical velocity unstable" on any build with a GPS component
+    /// selected.
+    ///
+    /// Sample-to-sample jitter must therefore be a small fraction of the total
+    /// error, not sqrt(2) times it.
+    #[test]
+    fn consecutive_fixes_do_not_jump_the_full_datasheet_sigma() {
+        let errors = altitude_errors(field_profile(), 400.0);
+        assert!(errors.len() > 1000, "expected a long run, got {}", errors.len());
+
+        let jitter = jitter(&errors);
+        assert!(
+            jitter < 1.2,
+            "consecutive altitude fixes differ by sigma {jitter:.3} m; a 3.0 m module \
+             must not hop that far between fixes 55 ms apart — the error has to be \
+             correlated, not white"
+        );
+    }
+
+    /// The decomposition must not quietly shrink the module's stated accuracy:
+    /// the total steady-state error still has to match what the datasheet says.
+    #[test]
+    fn total_error_still_matches_the_configured_sigma() {
+        let errors = altitude_errors(field_profile(), 2000.0);
+        let total = std_dev(&errors);
+        assert!(
+            (total - 3.0).abs() < 1.0,
+            "total altitude error sigma {total:.3} m should stay near the configured 3.0 m"
+        );
+    }
+
+    /// Horizontal used the configured sigma as pure white noise while altitude
+    /// got an ad-hoc extra 10% correlated term. Both axes must follow the same
+    /// model, or a build's horizontal behaviour cannot be reasoned about from
+    /// its vertical behaviour.
+    #[test]
+    fn horizontal_is_correlated_on_the_same_terms_as_altitude() {
+        let config = field_profile();
+        let mut sensor = GpsSensor::with_config_and_seed(config, 11);
+        let truth = [0.0, 0.0, -100.0];
+        let mut norths = Vec::new();
+        let step = 1.0 / 400.0;
+        let mut t = 0.0;
+        while t < 400.0 {
+            if let Some(r) = sensor.sample(&truth, &[0.0; 3], 40.0, -105.0, t) {
+                norths.push((r.lat - 40.0).to_radians() * EARTH_RADIUS_M);
+            }
+            t += step;
+        }
+        let jitter = jitter(&norths);
+        assert!(
+            jitter < 0.6,
+            "consecutive north fixes differ by sigma {jitter:.3} m; a 1.5 m module \
+             must not hop that far between fixes"
         );
     }
 }
