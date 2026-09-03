@@ -1,6 +1,6 @@
 //! Barometer sensor simulation using ISA (International Standard Atmosphere) model.
 
-use crate::noise::box_muller;
+use crate::noise::NormalSource;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -34,6 +34,8 @@ impl Default for BaroConfig {
 /// Simulated barometer sensor.
 pub struct BaroSensor {
     config: BaroConfig,
+    /// Keeps Box-Muller's second deviate; see `noise::NormalSource`.
+    normals: NormalSource,
     rng: StdRng,
 }
 
@@ -63,6 +65,7 @@ impl BaroSensor {
     pub fn with_config_and_seed(config: BaroConfig, seed: u64) -> Self {
         Self {
             config,
+            normals: NormalSource::new(),
             rng: StdRng::seed_from_u64(seed),
         }
     }
@@ -108,16 +111,24 @@ impl BaroSensor {
     /// Noisy barometer reading
     pub fn sample(&mut self, true_altitude_m: f64) -> BaroReading {
         // Add noise to altitude measurement
-        let u1: f64 = self.rng.gen_range(0.0001..1.0);
-        let u2: f64 = self.rng.gen();
-        let (z, _) = box_muller(u1, u2);
+        let z = self.normals.next(&mut self.rng);
         let noisy_altitude = true_altitude_m + self.config.noise_sigma * z;
 
         // Calculate pressure from noisy altitude
         let pressure_pa = Self::isa_pressure_pa(noisy_altitude);
 
-        // Calculate pressure altitude (what the barometer reports)
-        let altitude_m = Self::pressure_to_altitude(pressure_pa, self.config.reference_pressure_pa);
+        // Pressure altitude — what the barometer reports.
+        //
+        // Against the standard reference this is the algebraic inverse of the
+        // conversion just above, so the round trip returns `noisy_altitude` to
+        // about 1e-12 m and costs two `powf` — a full libm call each, and more
+        // so on wasm32 where there is no hardware path. Skipped when the
+        // reference is standard; a QNH offset still takes the real inverse.
+        let altitude_m = if self.config.reference_pressure_pa == ISA_P0 {
+            noisy_altitude
+        } else {
+            Self::pressure_to_altitude(pressure_pa, self.config.reference_pressure_pa)
+        };
 
         // Calculate temperature
         let temperature_k = Self::isa_temperature_k(noisy_altitude);

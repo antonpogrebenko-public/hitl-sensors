@@ -2,7 +2,7 @@
 //!
 //! Models a 3-axis magnetometer with configurable Earth field and noise.
 
-use crate::noise::box_muller;
+use crate::noise::NormalSource;
 use nalgebra::UnitQuaternion;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -34,6 +34,8 @@ impl Default for MagConfig {
 /// Simulated magnetometer sensor.
 pub struct MagSensor {
     config: MagConfig,
+    /// Keeps Box-Muller's second deviate; see `noise::NormalSource`.
+    normals: NormalSource,
     field_ned_gauss: [f64; 3],
     rng: StdRng,
 }
@@ -67,6 +69,7 @@ impl MagSensor {
 
         Self {
             config,
+            normals: NormalSource::new(),
             field_ned_gauss,
             rng: StdRng::seed_from_u64(seed),
         }
@@ -96,9 +99,7 @@ impl MagSensor {
         // Add noise
         let mut field = [0f32; 3];
         for i in 0..3 {
-            let u1: f64 = self.rng.gen_range(0.0001..1.0);
-            let u2: f64 = self.rng.gen();
-            let (z, _) = box_muller(u1, u2);
+            let z = self.normals.next(&mut self.rng);
             field[i] = (field_body[i] + self.config.noise_sigma_gauss * z) as f32;
         }
 

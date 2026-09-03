@@ -1,6 +1,6 @@
 //! GPS sensor simulation with delay buffer and Gauss-Markov drift.
 
-use crate::noise::{box_muller, GaussMarkov};
+use crate::noise::{GaussMarkov, NormalSource};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::VecDeque;
@@ -72,6 +72,8 @@ struct GpsSample {
 /// Simulated GPS sensor.
 pub struct GpsSensor {
     config: GpsConfig,
+    /// Keeps Box-Muller's second deviate; see `noise::NormalSource`.
+    normals: NormalSource,
     drift: [GaussMarkov; 3],
     /// The slow component of the module's stated accuracy, one per NED axis.
     correlated: [GaussMarkov; 3],
@@ -147,6 +149,7 @@ impl GpsSensor {
 
         Self {
             config,
+            normals: NormalSource::new(),
             drift,
             correlated,
             delay_buffer: VecDeque::new(),
@@ -219,18 +222,14 @@ impl GpsSensor {
             for i in 0..3 {
                 noisy_position[i] += self.drift[i].state() + self.correlated[i].state();
 
-                let u1: f64 = self.rng.gen_range(0.0001..1.0);
-                let u2: f64 = self.rng.gen();
-                let (z, _) = box_muller(u1, u2);
+                let z = self.normals.next(&mut self.rng);
                 noisy_position[i] += white_sigma[i] * z;
             }
 
             // Add velocity noise (configurable)
             let mut noisy_velocity = *velocity_ned;
             for v in &mut noisy_velocity {
-                let u1: f64 = self.rng.gen_range(0.0001..1.0);
-                let u2: f64 = self.rng.gen();
-                let (z, _) = box_muller(u1, u2);
+                let z = self.normals.next(&mut self.rng);
                 *v += self.config.velocity_noise_sigma * z;
             }
 

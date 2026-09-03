@@ -3,7 +3,7 @@
 //! Models gyroscope and accelerometer with realistic noise characteristics
 //! based on Kalibr/MPU-6000 specifications.
 
-use crate::noise::{box_muller, GaussMarkov};
+use crate::noise::{GaussMarkov, NormalSource};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -48,6 +48,15 @@ pub struct ImuSensor {
     gyro_bias: [GaussMarkov; 3],
     accel_bias: [GaussMarkov; 3],
     rng: StdRng,
+    /// Keeps Box-Muller's second deviate for the six white-noise draws below.
+    normals: NormalSource,
+    /// Noise densities divided by sqrt(dt), for the last dt sampled.
+    ///
+    /// All three are loop-invariant at a fixed step: one `sqrt` and two
+    /// divisions per sample, 400 times a second, for unchanging values.
+    cached_dt: f64,
+    accel_noise_sigma: f64,
+    gyro_noise_sigma: f64,
 }
 
 /// IMU reading containing accelerometer and gyroscope measurements.
@@ -88,6 +97,12 @@ impl ImuSensor {
             gyro_bias,
             accel_bias,
             rng: StdRng::seed_from_u64(seed),
+            normals: NormalSource::new(),
+            // NaN never equals the first real dt, so the first sample always
+            // computes rather than trusting an uninitialised coefficient.
+            cached_dt: f64::NAN,
+            accel_noise_sigma: 0.0,
+            gyro_noise_sigma: 0.0,
         }
     }
 
@@ -106,28 +121,29 @@ impl ImuSensor {
         true_gyro: &[f64; 3],
         dt: f64,
     ) -> ImuReading {
-        let dt_sqrt = dt.sqrt();
+        // Exact equality: the loop steps with a constant dt, so this recomputes
+        // once and then hits every sample.
+        if dt != self.cached_dt {
+            let dt_sqrt = dt.sqrt();
+            self.accel_noise_sigma = self.config.accel_noise_density / dt_sqrt;
+            self.gyro_noise_sigma = self.config.gyro_noise_density / dt_sqrt;
+            self.cached_dt = dt;
+        }
 
         // Generate white noise + bias for accelerometer
-        let accel_noise_sigma = self.config.accel_noise_density / dt_sqrt;
         let mut accel = [0f32; 3];
         for i in 0..3 {
             let bias = self.accel_bias[i].step(dt, &mut self.rng);
-            let u1: f64 = self.rng.gen_range(0.0001..1.0);
-            let u2: f64 = self.rng.gen();
-            let (z, _) = box_muller(u1, u2);
-            accel[i] = (true_accel_body[i] + bias + accel_noise_sigma * z) as f32;
+            let z = self.normals.next(&mut self.rng);
+            accel[i] = (true_accel_body[i] + bias + self.accel_noise_sigma * z) as f32;
         }
 
         // Generate white noise + bias for gyroscope
-        let gyro_noise_sigma = self.config.gyro_noise_density / dt_sqrt;
         let mut gyro = [0f32; 3];
         for i in 0..3 {
             let bias = self.gyro_bias[i].step(dt, &mut self.rng);
-            let u1: f64 = self.rng.gen_range(0.0001..1.0);
-            let u2: f64 = self.rng.gen();
-            let (z, _) = box_muller(u1, u2);
-            gyro[i] = (true_gyro[i] + bias + gyro_noise_sigma * z) as f32;
+            let z = self.normals.next(&mut self.rng);
+            gyro[i] = (true_gyro[i] + bias + self.gyro_noise_sigma * z) as f32;
         }
 
         ImuReading { accel, gyro }
